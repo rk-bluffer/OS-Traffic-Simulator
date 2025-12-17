@@ -2,82 +2,81 @@
 #include <thread>
 #include <chrono>
 #include <string>
-
+#include<iostream>
 using namespace std;
 
-// Helper to get text name of direction
 string getDirName(Direction d) {
     switch(d) {
-        case NORTH: return "NORTH";
-        case EAST: return "EAST";
-        case SOUTH: return "SOUTH";
-        case WEST: return "WEST";
+        case NORTH: return "NORTH"; case EAST: return "EAST";
+        case SOUTH: return "SOUTH"; case WEST: return "WEST";
         default: return "UNKNOWN";
     }
 }
 
-// --- PRODUCER ---
 void Intersection::addVehicle(Vehicle v) {
     roadCapacity.acquire(); 
 
     {
         unique_lock<mutex> lock(mtx);
-        // Add to the specific lane queue based on direction
         lanes[v.dir].push(v);
         
+        // VISUALIZER UPDATE: Add car to display list
+        displayList.push_back(v); 
+
         cout << "[SENSOR] " << (v.isEmergency ? "AMBULANCE" : "Vehicle") 
              << " #" << v.id << " arrived at " << getDirName(v.dir) << " Lane." << endl;
     }
-    cv.notify_all(); // Wake up controller
+    cv.notify_all(); 
 }
 
-// --- CONSUMER (Round Robin Scheduler) ---
 void Intersection::trafficControllerLoop() {
-    int currentLaneIndex = 0; // Start with NORTH (0)
+    int currentLaneIndex = 0; 
 
     while (true) {
-        // 1. Pick the current direction (Round Robin)
-        Direction currentDir = static_cast<Direction>(currentLaneIndex);
-        bool carFound = false;
-        Vehicle current(0, false, NORTH);
+        unique_lock<mutex> lock(mtx);
+        currentGreenLaneIndex = currentLaneIndex; // Update Graphics state
 
-        // 2. CRITICAL SECTION (Check the queue)
-        {
-            unique_lock<mutex> lock(mtx);
-            
-            // Check if there is a car in the CURRENT lane
-            if (!lanes[currentLaneIndex].empty()) {
-                current = lanes[currentLaneIndex].top();
-                lanes[currentLaneIndex].pop();
-                carFound = true;
-            } 
-            // EMERGENCY CHECK: Look at ALL other lanes for an Ambulance
-            else {
-                // (Optional Priority Inversion Logic could go here)
-            }
+        // Rain Mode Handling
+        if (systemRadio.heavyRainMode) {
+             this_thread::sleep_for(chrono::milliseconds(500)); 
         }
 
-        // 3. PROCESS THE CAR (Outside Lock)
-        if (carFound) {
-            roadCapacity.release(); // Free up space
-
-            cout << "\n[LIGHT] " << getDirName(currentDir) << " LIGHT: GREEN -> Vehicle #" << current.id << " crossing." << endl;
-            
-            if (current.isEmergency) {
-                cout << "!!! PRIORITY PASSAGE !!!" << endl;
-                this_thread::sleep_for(chrono::milliseconds(500)); 
-            } else {
-                this_thread::sleep_for(chrono::seconds(1)); 
-            }
-        } else {
-            // Lane is empty, switch immediately to next lane (No sleep)
-            // cout << "[LIGHT] " << getDirName(currentDir) << " Lane Empty. Switching..." << endl;
+        // Global Sleep (Empty Road Interrupt)
+        while (lanes[0].empty() && lanes[1].empty() && lanes[2].empty() && lanes[3].empty()) {
+            currentGreenLaneIndex = -1; // Turn lights Red visually
+            cv.wait(lock);
+            currentGreenLaneIndex = currentLaneIndex;
         }
 
-        // 4. ROUND ROBIN: Move to next lane (0 -> 1 -> 2 -> 3 -> 0)
-        currentLaneIndex = (currentLaneIndex + 1) % 4;
+        // Round Robin Skip
+        if (lanes[currentLaneIndex].empty()) {
+            currentLaneIndex = (currentLaneIndex + 1) % 4;
+            continue; 
+        }
+
+        // Process Vehicle
+        Vehicle current = lanes[currentLaneIndex].top();
+        lanes[currentLaneIndex].pop();
+
+        // VISUALIZER UPDATE: Remove car from display list
+        for(auto it = displayList.begin(); it != displayList.end(); ++it) {
+            if(it->id == current.id) {
+                displayList.erase(it);
+                break;
+            }
+        }
         
-        // Small delay to prevent CPU burning if all empty
-        this_thread::sleep_for(chrono::milliseconds(100));
+        lock.unlock();
+        roadCapacity.release(); 
+
+        cout << "\n[LIGHT] " << getDirName(static_cast<Direction>(currentLaneIndex)) 
+             << " LIGHT: GREEN -> Vehicle #" << current.id << " crossing." << endl;
+        
+        int crossingTime = current.isEmergency ? 500 : 1000;
+        if (systemRadio.heavyRainMode) crossingTime *= 2; 
+
+        this_thread::sleep_for(chrono::milliseconds(crossingTime));
+
+        currentLaneIndex = (currentLaneIndex + 1) % 4;
     }
 }

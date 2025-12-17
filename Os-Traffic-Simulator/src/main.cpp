@@ -7,51 +7,56 @@
 
 using namespace std;
 
+// The Global Shared Intersection Object
 Intersection smartIntersection(10); 
 
+// Forward Declaration: Tells main that this function exists in Visualizer.cpp
+void runVisualizer(Intersection* intersection);
+
+// --- GENERATOR THREAD ---
 void vehicleGenerator() {
     int carID = 1;
     while (true) {
-        bool isEmergency = (rand() % 10 == 0); 
+        bool isEmergency = (rand() % 20 == 0); 
         Direction dir = static_cast<Direction>(rand() % 4);
         Vehicle v(carID++, isEmergency, dir);
         smartIntersection.addVehicle(v);
-        this_thread::sleep_for(chrono::milliseconds(500 + (rand() % 1000)));
+        this_thread::sleep_for(chrono::milliseconds(1000 + (rand() % 2000)));
     }
 }
 
-// --- NEW: SYSTEM ADMIN THREAD ---
-// This acts as the "Operating System Kernel" or "AI"
-// It randomly toggles system states (Signals)
+// --- ADMIN THREAD ---
 void systemAdmin() {
     while (true) {
-        // Wait 10 seconds
-        this_thread::sleep_for(chrono::seconds(10));
-
-        // Toggle Rain Mode
+        this_thread::sleep_for(chrono::seconds(15));
         bool currentState = smartIntersection.systemRadio.heavyRainMode;
         smartIntersection.systemRadio.heavyRainMode = !currentState;
-
-        if (!currentState) {
-            cout << "\n*** [AI ADMIN] ACTIVATING RAIN MODE (SYSTEM SLOWDOWN) ***\n" << endl;
-        } else {
-            cout << "\n*** [AI ADMIN] DEACTIVATING RAIN MODE (SYSTEM NORMAL) ***\n" << endl;
-        }
+        if (!currentState) cout << "\n*** [AI] RAIN MODE ON ***" << endl;
+        else cout << "\n*** [AI] RAIN MODE OFF ***" << endl;
     }
 }
 
 int main() {
-    cout << "=== OS TRAFFIC SIMULATOR: DAY 5 (AI SIGNALS) ===" << endl;
+    cout << "=== SMART CITY OS SIMULATOR: GRAPHICAL MODE ===" << endl;
     
+    // 1. Launch Logic Threads
+    // We create them, but we DO NOT call .join() on them immediately.
     thread controllerThread(&Intersection::trafficControllerLoop, &smartIntersection);
     thread generatorThread(vehicleGenerator);
-    
-    // Launch the Admin Thread
     thread adminThread(systemAdmin);
 
-    controllerThread.join();
-    generatorThread.join();
-    adminThread.join();
+    // 2. Detach them so they run in the background independently
+    controllerThread.detach();
+    generatorThread.detach();
+    adminThread.detach();
+
+    // 3. Run Visualizer in the MAIN thread
+    // This function acts as the "Main Loop" now. It will block here until the window closes.
+    runVisualizer(&smartIntersection);
+    
+    // 4. When the window closes, we kill the program
+    cout << "Window closed. Exiting simulation." << endl;
+    exit(0); 
 
     return 0;
 }
