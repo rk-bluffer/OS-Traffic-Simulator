@@ -216,7 +216,7 @@
         tr:last-child td { border-bottom: none; }
         
         /* Badges */
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; font-family: sans-serif; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; font-family: sans-serif; }
         .badge-run { background: rgba(166, 227, 161, 0.15); color: var(--accent-east); }
         .badge-wait { background: rgba(147, 153, 178, 0.15); color: var(--text-dim); }
         .badge-block { background: rgba(243, 139, 168, 0.15); color: var(--accent-north); }
@@ -294,11 +294,13 @@
             <table id="pcb-table">
                 <thead>
                     <tr>
+                        <th>PID</th> <!-- Added PID -->
                         <th>Thread Name</th>
                         <th>Priority</th>
                         <th>State</th>
                         <th>Sem (Queue)</th> 
                         <th>Burst Time</th>
+                        <th>Wait Time</th> <!-- Added Wait Time -->
                         <th>Interrupts</th>
                         <th>Throughput</th>
                     </tr>
@@ -319,17 +321,20 @@
             currentGreenLane: 0,
             isRainMode: false,
             carIdCounter: 1,
-            greenStartTime: 0,  // Track when green started for smooth timer
-            greenDuration: 0,   // Track duration
+            greenStartTime: 0,  
+            greenDuration: 0,   
             threadLoad: { north: 0, east: 0, south: 0, west: 0, ambulance: 0 },
             interruptedLane: -1,
             contextSwitching: false,
+            // Track if alert is active on a lane
+            alertLane: -1,
+            // PCB Statistics (Added PID and WaitTime)
             stats: {
-                0: { name: 'North Controller', priority: 1, state: 'WAITING', burstTime: 0, interrupts: 0, throughput: 0, color: '#f38ba8' },
-                1: { name: 'East Controller', priority: 1, state: 'WAITING', burstTime: 0, interrupts: 0, throughput: 0, color: '#a6e3a1' },
-                2: { name: 'South Controller', priority: 1, state: 'WAITING', burstTime: 0, interrupts: 0, throughput: 0, color: '#89b4fa' },
-                3: { name: 'West Controller', priority: 1, state: 'WAITING', burstTime: 0, interrupts: 0, throughput: 0, color: '#f9e2af' },
-                4: { name: 'Interrupt Handler', priority: 0, state: 'IDLE', burstTime: 0, interrupts: 0, throughput: 0, color: '#cba6f7' } 
+                0: { pid: 1024, name: 'North Controller', priority: 1, state: 'WAITING', burstTime: 0, waitTime: 0, interrupts: 0, throughput: 0, color: '#f38ba8' },
+                1: { pid: 1025, name: 'East Controller', priority: 1, state: 'WAITING', burstTime: 0, waitTime: 0, interrupts: 0, throughput: 0, color: '#a6e3a1' },
+                2: { pid: 1026, name: 'South Controller', priority: 1, state: 'WAITING', burstTime: 0, waitTime: 0, interrupts: 0, throughput: 0, color: '#89b4fa' },
+                3: { pid: 1027, name: 'West Controller', priority: 1, state: 'WAITING', burstTime: 0, waitTime: 0, interrupts: 0, throughput: 0, color: '#f9e2af' },
+                4: { pid: 2001, name: 'Interrupt Handler', priority: 0, state: 'IDLE', burstTime: 0, waitTime: 0, interrupts: 0, throughput: 0, color: '#cba6f7' } 
             }
         };
 
@@ -441,6 +446,11 @@
                 updateLoad(-1, false);
                 if (state.isRainMode) await sleep(500);
 
+                // --- CRASH FIX: Ensure laneIndex is valid ---
+                if (state.currentGreenLane < 0 || state.currentGreenLane >= 4) {
+                    console.warn("Invalid Lane detected, resetting to 0");
+                    state.currentGreenLane = 0;
+                }
                 const laneIndex = state.currentGreenLane;
                 const currentLane = state.lanes[laneIndex];
 
@@ -490,9 +500,17 @@
                             }
                         });
                         if (globalBestLane !== -1 && globalBestLane !== laneIndex) {
-                             log(`[INTERRUPT] 🚑 Priority Interrupt from ${getDirName(globalBestLane)}!`);
+                             log(`[ALERT] ⚠️ Yielding to Ambulance in ${getDirName(globalBestLane)} (1s safety delay)...`);
+                             
+                             // VISUAL ALERT
+                             state.alertLane = laneIndex;
+                             await sleep(1000); // 1 second safety delay
+                             state.alertLane = -1;
+
+                             log(`[INTERRUPT] 🚑 Priority Interrupt! Switching.`);
                              updateLoad(laneIndex, true); 
                              addInterrupt();
+                             
                              if (state.interruptedLane === -1) state.interruptedLane = laneIndex;
                              
                              setContextSwitch(true);
@@ -520,7 +538,15 @@
                                 if (lane.length > 0 && lane[0].isEmergency) innerBestLane = idx;
                             });
                             if (innerBestLane !== -1 && innerBestLane !== laneIndex) {
+                                log(`[ALERT] ⚠️ Yielding to Ambulance (1s safety delay)...`);
+                                
+                                // VISUAL ALERT
+                                state.alertLane = laneIndex;
+                                await sleep(1000);
+                                state.alertLane = -1;
+
                                 if (state.interruptedLane === -1) state.interruptedLane = laneIndex;
+                                
                                 updateLoad(laneIndex, true); 
                                 addInterrupt();
                                 state.currentGreenLane = innerBestLane;
@@ -552,17 +578,19 @@
                 await sleep(500); 
                 
                 if (!forcedSwitch) {
+                    let nextLane = (state.currentGreenLane + 1) % 4;
+                    
+                    if (state.interruptedLane !== -1) {
+                        log(`[RESUME] Returning context to ${getDirName(state.interruptedLane)}.`);
+                        nextLane = state.interruptedLane;
+                        state.interruptedLane = -1; // Clear yellow immediately
+                    }
+
                     setContextSwitch(true); 
                     await sleep(200);
                     setContextSwitch(false);
 
-                    if (state.interruptedLane !== -1) {
-                        log(`[RESUME] Returning context to ${getDirName(state.interruptedLane)}.`);
-                        state.currentGreenLane = state.interruptedLane;
-                        state.interruptedLane = -1; 
-                    } else {
-                        state.currentGreenLane = (state.currentGreenLane + 1) % 4;
-                    }
+                    state.currentGreenLane = nextLane;
                 }
             }
         }
@@ -593,6 +621,7 @@
             ambulance: new Array(historySize).fill(0)
         };
         let lastGraphUpdate = 0;
+        let lastFrameTime = 0;
 
         function drawStatsTable() {
             const tbody = document.getElementById('pcb-body');
@@ -608,11 +637,13 @@
                 if (i < 4) semText = `${state.lanes[i].length} / 8`;
 
                 html += `<tr>
+                    <td>${s.pid}</td>
                     <td style="color:${s.color}; font-weight:600;">${s.name}</td>
                     <td>${s.priority}</td>
                     <td><span class="badge ${badgeClass}">${s.state}</span></td>
                     <td>${semText}</td>
                     <td>${s.burstTime.toFixed(1)}s</td>
+                    <td>${s.waitTime.toFixed(1)}s</td>
                     <td>${s.interrupts}</td>
                     <td>${s.throughput}</td>
                 </tr>`;
@@ -700,6 +731,17 @@
         let patGrass, patRoad;
 
         function draw(timestamp) {
+            // Wait Time Logic
+            if (!lastFrameTime) lastFrameTime = timestamp;
+            const dt = (timestamp - lastFrameTime) / 1000;
+            lastFrameTime = timestamp;
+
+            for (let i=0; i<=4; i++) {
+                if (state.stats[i].state === 'WAITING' || state.stats[i].state.includes('BLOCKED')) {
+                    state.stats[i].waitTime += dt;
+                }
+            }
+
             if(!patGrass) patGrass = ctx.createPattern(grassPattern, 'repeat');
             if(!patRoad) patRoad = ctx.createPattern(roadPattern, 'repeat');
             
@@ -712,6 +754,7 @@
 
             drawRoads();
             drawTrafficLights();
+            drawAlerts(); // NEW: Draw Red Alert Banners (After vehicles)
 
             state.lanes.forEach((queue, laneIndex) => {
                 queue.forEach((car, posIndex) => draw3DCar(car, laneIndex, posIndex));
@@ -720,6 +763,41 @@
             drawPerfGraph(timestamp);
             drawStatsTable();
             requestAnimationFrame(draw);
+        }
+
+        function drawAlerts() {
+            if (state.alertLane !== -1) {
+                ctx.save();
+                
+                // Draw Text "YIELD"
+                ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+                ctx.font = "bold 16px Consolas";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.shadowColor = "black";
+                ctx.shadowBlur = 4;
+                const text = "⚠ YIELD";
+
+                switch(state.alertLane) {
+                    case 0: // North (Right Side) -> Text Horizontal at top
+                        ctx.translate(425, 220);
+                        break;
+                    case 1: // East (Bottom Side) -> Text Vertical at right
+                        ctx.translate(480, 325);
+                        ctx.rotate(-Math.PI/2);
+                        break;
+                    case 2: // South (Left Side) -> Text Horizontal at bottom
+                        ctx.translate(375, 380);
+                        break;
+                    case 3: // West (Top Side) -> Text Vertical at left
+                        ctx.translate(320, 275);
+                        ctx.rotate(Math.PI/2);
+                        break;
+                }
+                
+                ctx.fillText(text, 0, 0);
+                ctx.restore();
+            }
         }
 
         function drawBuilding(x, y, w, h) {
@@ -755,6 +833,20 @@
                 ctx.fillText("MUTEX LOCKED", 360, 305);
             }
 
+            // Yellow Blink for Interrupted Lane (Memory)
+            if (state.interruptedLane !== -1) {
+                const alpha = 0.2 + 0.1 * Math.sin(Date.now() / 150);
+                ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`; // Gold/Yellow
+                drawLaneOverlay(state.interruptedLane);
+            }
+
+            // Red Alarm for Alert Phase (Yielding) - SPECIFIC LANE ONLY
+            if (state.alertLane !== -1) {
+                const alpha = 0.2 + 0.1 * Math.sin(Date.now() / 50); // Fast blink
+                ctx.fillStyle = `rgba(255, 0, 0, ${alpha})`;
+                drawLaneOverlay(state.alertLane); // Only specific lane
+            }
+
             ctx.strokeStyle = '#f9e2af'; ctx.lineWidth = 2; ctx.setLineDash([15, 15]);
             ctx.beginPath();
             ctx.moveTo(400, 0); ctx.lineTo(400, 250); ctx.moveTo(400, 350); ctx.lineTo(400, 600);
@@ -762,13 +854,36 @@
             ctx.stroke();
             
             ctx.setLineDash([]); ctx.strokeStyle = '#cdd6f4'; ctx.lineWidth = 6;
-            // LHT STOP LINES
+            
+            // LHT STOP LINES (Dynamic)
             ctx.beginPath();
-            ctx.moveTo(400, 250); ctx.lineTo(450, 250); // North (Top Right)
-            ctx.moveTo(350, 350); ctx.lineTo(400, 350); // South (Bottom Left)
-            ctx.moveTo(450, 300); ctx.lineTo(450, 350); // East (Bottom Right)
-            ctx.moveTo(350, 250); ctx.lineTo(350, 300); // West (Top Left)
+            // North (Right Side)
+            if (state.currentGreenLane !== 0 || state.remainingTime <= 0) {
+                ctx.moveTo(400, 250); ctx.lineTo(450, 250); 
+            }
+            // East (Bottom Side)
+            if (state.currentGreenLane !== 1 || state.remainingTime <= 0) {
+                ctx.moveTo(450, 300); ctx.lineTo(450, 350); 
+            }
+            // South (Left Side)
+            if (state.currentGreenLane !== 2 || state.remainingTime <= 0) {
+                ctx.moveTo(350, 350); ctx.lineTo(400, 350); 
+            }
+            // West (Top Side)
+            if (state.currentGreenLane !== 3 || state.remainingTime <= 0) {
+                ctx.moveTo(350, 250); ctx.lineTo(350, 300); 
+            }
             ctx.stroke();
+        }
+
+        function drawLaneOverlay(laneIndex) {
+            // LHT Coordinates for the specific lane arm (Yellow blink)
+            switch(laneIndex) {
+                case 0: ctx.fillRect(400, 0, 50, 250); break;   // North (Right side)
+                case 1: ctx.fillRect(450, 300, 350, 50); break; // East (Bottom side)
+                case 2: ctx.fillRect(350, 350, 50, 250); break; // South (Left side)
+                case 3: ctx.fillRect(0, 250, 350, 50); break;   // West (Top side)
+            }
         }
 
         function drawTrafficLights() {
